@@ -7,6 +7,12 @@ mod cli;
 mod demod;
 mod markers;
 mod plugins;
+mod profiles;
+mod classifier;
+mod streaming;
+mod scheduler;
+mod scanner;
+mod rds;
 
 #[derive(Parser)]
 #[command(name = "signalscope")]
@@ -99,6 +105,165 @@ enum Commands {
     Plugins {
         #[command(subcommand)]
         cmd: PluginCommands,
+    },
+    /// Recording scheduler
+    Schedule {
+        #[command(subcommand)]
+        cmd: ScheduleCommands,
+    },
+    /// Signal classification
+    Classify {
+        /// Input file (IQ samples)
+        #[arg(short, long)]
+        input: String,
+        /// Sample rate in Hz
+        #[arg(short, long, default_value = "2.048e6")]
+        sample_rate: f64,
+    },
+    /// RDS decoder
+    Rds {
+        /// Input file (IQ samples)
+        #[arg(short, long)]
+        input: String,
+        /// Sample rate in Hz
+        #[arg(short, long, default_value = "2.048e6")]
+        sample_rate: f64,
+        /// Number of processing blocks
+        #[arg(short, long, default_value = "50")]
+        blocks: usize,
+    },
+    /// Frequency scanner
+    Scan {
+        /// Start frequency in Hz
+        #[arg(long, default_value = "88e6")]
+        start_freq: f64,
+        /// End frequency in Hz
+        #[arg(long, default_value = "108e6")]
+        end_freq: f64,
+        /// Step size in Hz
+        #[arg(long, default_value = "100e3")]
+        step: f64,
+        /// Squelch threshold in dB
+        #[arg(long, default_value = "15.0")]
+        squelch: f32,
+        /// Dwell time in milliseconds
+        #[arg(long, default_value = "100")]
+        dwell_ms: u64,
+        /// Frequency list (comma-separated, overrides start/end/step)
+        #[arg(long)]
+        freq_list: Option<String>,
+        /// Stop on first signal (default), or scan all
+        #[arg(long)]
+        scan_all: bool,
+        /// Sample rate
+        #[arg(long, default_value = "2.048e6")]
+        sample_rate: f64,
+    },
+    /// UDP streaming
+    Stream {
+        /// Target host
+        #[arg(short, long, default_value = "127.0.0.1")]
+        host: String,
+        /// Target port
+        #[arg(short, long, default_value = "7355")]
+        port: u16,
+        /// Stream format: raw-iq, audio-f32, audio-i16
+        #[arg(short, long, default_value = "raw-iq")]
+        format: String,
+        /// Center frequency in Hz (for live capture)
+        #[arg(long)]
+        center_freq: Option<f64>,
+        /// Input file (for file streaming instead of live)
+        #[arg(short, long)]
+        input: Option<String>,
+        /// Sample rate
+        #[arg(long, default_value = "2.048e6")]
+        sample_rate: f64,
+        /// Duration in seconds (0 = unlimited)
+        #[arg(short, long, default_value = "0")]
+        duration: u64,
+    },
+    /// Config profiles
+    Profile {
+        #[command(subcommand)]
+        cmd: ProfileCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleCommands {
+    /// Add a scheduled recording
+    Add {
+        /// Schedule name
+        #[arg(short, long)]
+        name: String,
+        /// Center frequency in Hz
+        #[arg(short, long)]
+        frequency: f64,
+        /// Recording duration in seconds
+        #[arg(short, long)]
+        duration: u64,
+        /// Output file path
+        #[arg(short, long)]
+        output: String,
+        /// Cron expression (min hour day month dow)
+        #[arg(short, long)]
+        cron: String,
+        /// Sample rate
+        #[arg(long, default_value = "2.048e6")]
+        sample_rate: f64,
+    },
+    /// List scheduled recordings
+    List,
+    /// Remove a scheduled recording
+    Remove {
+        /// Schedule name
+        #[arg(short, long)]
+        name: String,
+    },
+    /// Start scheduler daemon
+    Run,
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Save current settings as a profile
+    Save {
+        /// Profile name
+        #[arg(short, long)]
+        name: String,
+        /// Center frequency in Hz
+        #[arg(short, long)]
+        frequency: f64,
+        /// Sample rate
+        #[arg(long, default_value = "2.048e6")]
+        sample_rate: f64,
+        /// Gain in dB
+        #[arg(long, default_value = "0")]
+        gain: i32,
+        /// Demodulation mode
+        #[arg(long, default_value = "fm")]
+        demod: String,
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+        /// Tags (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// Load and display a profile
+    Load {
+        /// Profile name
+        #[arg(short, long)]
+        name: String,
+    },
+    /// List all profiles
+    List,
+    /// Delete a profile
+    Delete {
+        /// Profile name
+        #[arg(short, long)]
+        name: String,
     },
 }
 
@@ -196,6 +361,34 @@ fn main() -> anyhow::Result<()> {
             PluginCommands::Load { path } => cli::plugin_load(&path),
             PluginCommands::Scan => cli::plugin_scan(),
             PluginCommands::SetParam { index, key, value } => cli::plugin_set_param(index, &key, value),
+        },
+        Commands::Schedule { cmd } => match cmd {
+            ScheduleCommands::Add { name, frequency, duration, output, cron, sample_rate } => {
+                cli::schedule_add(&name, frequency, duration, &output, &cron, sample_rate)
+            }
+            ScheduleCommands::List => cli::schedule_list(),
+            ScheduleCommands::Remove { name } => cli::schedule_remove(&name),
+            ScheduleCommands::Run => cli::schedule_run(),
+        },
+        Commands::Classify { input, sample_rate } => {
+            cli::classify(&input, sample_rate)
+        }
+        Commands::Rds { input, sample_rate, blocks } => {
+            cli::rds_decode(&input, sample_rate, blocks)
+        }
+        Commands::Scan { start_freq, end_freq, step, squelch, dwell_ms, freq_list, scan_all, sample_rate } => {
+            cli::scan(start_freq, end_freq, step, squelch, dwell_ms, freq_list, scan_all, sample_rate)
+        }
+        Commands::Stream { host, port, format, center_freq, input, sample_rate, duration } => {
+            cli::stream(&host, port, &format, center_freq, input.as_deref(), sample_rate, duration)
+        }
+        Commands::Profile { cmd } => match cmd {
+            ProfileCommands::Save { name, frequency, sample_rate, gain, demod, description, tags } => {
+                cli::profile_save(&name, frequency, sample_rate, gain, &demod, description, tags)
+            }
+            ProfileCommands::Load { name } => cli::profile_load(&name),
+            ProfileCommands::List => cli::profile_list(),
+            ProfileCommands::Delete { name } => cli::profile_delete(&name),
         },
     }
 }

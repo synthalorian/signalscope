@@ -1,4 +1,4 @@
-use crate::{capture, dsp, display, demod, markers, plugins};
+use crate::{capture, dsp, display, demod, markers, plugins, profiles, classifier, streaming, scheduler, scanner, rds};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -479,5 +479,408 @@ pub fn plugin_scan() -> Result<()> {
 
 pub fn plugin_set_param(index: usize, key: &str, value: f64) -> Result<()> {
     println!("Set plugin[{}].{} = {}", index, key, value);
+    Ok(())
+}
+
+const DEFAULT_SCHEDULE_FILE: &str = "/home/synth/.config/signalscope/schedules.json";
+
+fn ensure_schedule_dir() -> Result<()> {
+    if let Some(parent) = std::path::Path::new(DEFAULT_SCHEDULE_FILE).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+pub fn schedule_add(name: &str, frequency: f64, duration: u64, output: &str, cron: &str, sample_rate: f64) -> Result<()> {
+    ensure_schedule_dir()?;
+    
+    let mut scheduler = scheduler::RecordingScheduler::new();
+    if std::fs::metadata(DEFAULT_SCHEDULE_FILE).is_ok() {
+        let _ = scheduler.load(DEFAULT_SCHEDULE_FILE);
+    }
+    
+    let schedule = scheduler::RecordingSchedule::new(name, frequency as u64, duration, output, cron)
+        .with_sample_rate(sample_rate as u32);
+    
+    scheduler.add_schedule(schedule);
+    scheduler.save(DEFAULT_SCHEDULE_FILE)?;
+    
+    println!("Added schedule '{}' at {} MHz, duration {}s", name, frequency / 1e6, duration);
+    println!("Cron: {} | Output: {}", cron, output);
+    Ok(())
+}
+
+pub fn schedule_list() -> Result<()> {
+    let mut scheduler = scheduler::RecordingScheduler::new();
+    if std::fs::metadata(DEFAULT_SCHEDULE_FILE).is_ok() {
+        let _ = scheduler.load(DEFAULT_SCHEDULE_FILE);
+    }
+    
+    let schedules = scheduler.list_schedules();
+    if schedules.is_empty() {
+        println!("No scheduled recordings.");
+    } else {
+        println!("{} scheduled recording(s):", schedules.len());
+        for s in schedules {
+            let status = if s.enabled { "enabled" } else { "disabled" };
+            let last_run = s.last_run.map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "never".to_string());
+            println!("  [{}] {} — {:.2} MHz, {}s, cron: {} ({})",
+                s.name, status, s.frequency_hz as f64 / 1e6, s.duration_sec, s.cron_expr, last_run);
+        }
+    }
+    Ok(())
+}
+
+pub fn schedule_remove(name: &str) -> Result<()> {
+    ensure_schedule_dir()?;
+    
+    let mut scheduler = scheduler::RecordingScheduler::new();
+    if std::fs::metadata(DEFAULT_SCHEDULE_FILE).is_ok() {
+        let _ = scheduler.load(DEFAULT_SCHEDULE_FILE);
+    }
+    
+    if scheduler.remove_schedule(name) {
+        scheduler.save(DEFAULT_SCHEDULE_FILE)?;
+        println!("Removed schedule '{}'", name);
+    } else {
+        println!("Schedule '{}' not found.", name);
+    }
+    Ok(())
+}
+
+pub fn schedule_run() -> Result<()> {
+    ensure_schedule_dir()?;
+    
+    let mut scheduler = scheduler::RecordingScheduler::new();
+    if std::fs::metadata(DEFAULT_SCHEDULE_FILE).is_ok() {
+        scheduler.load(DEFAULT_SCHEDULE_FILE)?;
+    }
+    
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+    
+    scheduler.run(|schedule| {
+        let config = capture::CaptureConfig {
+            center_freq: schedule.frequency_hz,
+            sample_rate: schedule.sample_rate_hz,
+            gain: 0,
+            device_index: 0,
+        };
+        
+        let sample_count = (schedule.duration_sec * schedule.sample_rate_hz as u64) as usize;
+        let samples = capture::capture_samples(&config, sample_count)?;
+        
+        use std::fs::File;
+        use std::io::Write;
+        let mut file = File::create(&schedule.output_path)?;
+        for sample in &samples {
+            file.write_all(&sample.i.to_le_bytes())?;
+            file.write_all(&sample.q.to_le_bytes())?;
+        }
+        
+        println!("Recorded {} samples to {}", samples.len(), schedule.output_path);
+        Ok(())
+    }, running)?;
+    
+    Ok(())
+}
+
+pub fn classify(input: &str, sample_rate: f64) -> Result<()> {
+    use std::fs::File;
+    use std::io::Read;
+    
+    let mut file = File::open(input)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    let sample_count = buffer.len() / 8;
+    let mut samples = Vec::with_capacity(sample_count);
+    
+    for chunk in buffer.chunks_exact(8) {
+        let i = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let q = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        samples.push(capture::IQSample { i, q });
+    }
+    
+    println!("Loaded {} IQ samples from {}", samples.len(), input);
+    println!("Classifying signal...\n");
+    
+    let classifier = classifier::SignalClassifier::new();
+    let result = classifier.classify(&samples, sample_rate as f32);
+    
+    println!("Classification Result:");
+    println!("  Type:       {} (confidence: {:.1}%)", result.class, result.confidence * 100.0);
+    println!("  Bandwidth:  {:.0} Hz", result.bandwidth_hz);
+    println!("  Notes:");
+    for note in &result.notes {
+        println!("    - {}", note);
+    }
+    
+    Ok(())
+}
+
+pub fn rds_decode(input: &str, sample_rate: f64, blocks: usize) -> Result<()> {
+    use std::fs::File;
+    use std::io::Read;
+    
+    let mut file = File::open(input)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    let sample_count = buffer.len() / 8;
+    let mut samples = Vec::with_capacity(sample_count);
+    
+    for chunk in buffer.chunks_exact(8) {
+        let i = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let q = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        samples.push(capture::IQSample { i, q });
+    }
+    
+    println!("Loaded {} IQ samples from {}", samples.len(), input);
+    println!("Decoding RDS from FM multiplex...\n");
+    
+    let mut decoder = rds::RdsDecoder::new(sample_rate as f32);
+    
+        let block_size = 65536usize;
+    for i in 0..blocks {
+        let start = i * block_size;
+        let end = ((i + 1) * block_size).min(samples.len());
+        if start >= samples.len() {
+            break;
+        }
+        
+        decoder.process_samples(&samples[start..end]);
+        
+        if !decoder.info.programme_service.is_empty() {
+            print!("\rBlock {}/{}: PS='{}' RT='{}'", 
+                i + 1, blocks,
+                decoder.info.programme_service,
+                if decoder.info.radio_text.len() > 30 {
+                    format!("{}...", &decoder.info.radio_text[..30])
+                } else {
+                    decoder.info.radio_text.clone()
+                }
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    }
+    
+    println!();
+    rds::print_rds_info(&decoder.info);
+    
+    Ok(())
+}
+
+pub fn scan(start_freq: f64, end_freq: f64, step: f64, squelch: f32, dwell_ms: u64, freq_list: Option<String>, scan_all: bool, sample_rate: f64) -> Result<()> {
+    let config = scanner::ScannerConfig {
+        start_freq_hz: start_freq as u64,
+        end_freq_hz: end_freq as u64,
+        step_hz: step as u64,
+        squelch_db: squelch,
+        dwell_ms,
+        sample_rate_hz: sample_rate as u32,
+        sample_count: 4096,
+        stop_on_signal: !scan_all,
+        frequency_list: match freq_list {
+            Some(list) => scanner::parse_frequency_list(&list)?,
+            None => Vec::new(),
+        },
+    };
+    
+    let scanner = scanner::FrequencyScanner::new(config);
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+    
+    scanner.scan(|capture_config, count| {
+        capture::capture_samples(capture_config, count)
+    }, running)?;
+    
+    Ok(())
+}
+
+pub fn stream(host: &str, port: u16, format: &str, center_freq: Option<f64>, input: Option<&str>, sample_rate: f64, duration: u64) -> Result<()> {
+    let stream_format = streaming::parse_stream_format(format)
+        .ok_or_else(|| anyhow::anyhow!("Unknown stream format: {}. Use: raw-iq, audio-f32, audio-i16", format))?;
+    
+    let config = streaming::UdpStreamConfig::new(host, port)
+        .with_format(stream_format);
+    
+    if let Some(input_file) = input {
+        use std::fs::File;
+        use std::io::Read;
+        
+        println!("Streaming {} to {}:{} (format: {})", input_file, host, port, format);
+        
+        let mut file = File::open(input_file)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        
+        let sample_count = buffer.len() / 8;
+        let mut samples = Vec::with_capacity(sample_count);
+        
+        for chunk in buffer.chunks_exact(8) {
+            let i = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let q = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            samples.push((i, q));
+        }
+        
+        let mut streamer = streaming::UdpStreamer::new(config)?;
+        let chunk_size = 1024usize;
+        
+        for chunk in samples.chunks(chunk_size) {
+            streamer.stream_iq(chunk)?;
+        }
+        
+        let stats = streamer.stats();
+        println!("Streamed {} packets ({} bytes)", stats.packets_sent, stats.bytes_sent);
+    } else {
+        let freq = center_freq.unwrap_or(100e6);
+        let capture_config = capture::CaptureConfig {
+            center_freq: freq as u64,
+            sample_rate: sample_rate as u32,
+            gain: 0,
+            device_index: 0,
+        };
+        
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        
+        ctrlc::set_handler(move || {
+            r.store(false, Ordering::SeqCst);
+        }).expect("Error setting Ctrl-C handler");
+        
+        let start_time = std::time::Instant::now();
+        let max_duration = if duration > 0 { Some(std::time::Duration::from_secs(duration)) } else { None };
+        
+        let mut streamer = streaming::UdpStreamer::new(config)?;
+        
+        capture::capture_stream(&capture_config, 1024, |samples| {
+            let tuples: Vec<(f32, f32)> = samples.iter().map(|s| (s.i, s.q)).collect();
+            let _ = streamer.stream_iq(&tuples);
+            
+            if let Some(max_dur) = max_duration {
+                start_time.elapsed() < max_dur
+            } else {
+                running.load(Ordering::SeqCst)
+            }
+        })?;
+        
+        let stats = streamer.stats();
+        println!("\nStreamed {} packets ({} bytes)", stats.packets_sent, stats.bytes_sent);
+    }
+    
+    Ok(())
+}
+
+const DEFAULT_PROFILE_FILE: &str = "/home/synth/.config/signalscope/profiles.json";
+
+fn ensure_profile_dir() -> Result<()> {
+    if let Some(parent) = std::path::Path::new(DEFAULT_PROFILE_FILE).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+pub fn profile_save(name: &str, frequency: f64, sample_rate: f64, gain: i32, demod: &str, description: Option<String>, tags: Option<String>) -> Result<()> {
+    ensure_profile_dir()?;
+    
+    let mut manager = profiles::ProfileManager::new();
+    if std::fs::metadata(DEFAULT_PROFILE_FILE).is_ok() {
+        let _ = manager.load_from_file(DEFAULT_PROFILE_FILE);
+    }
+    
+    let mut profile = profiles::ReceiverProfile::new(name, frequency as u64, sample_rate as u32)
+        .with_gain(gain)
+        .with_demod(demod);
+    
+    if let Some(desc) = description {
+        profile = profile.with_description(desc);
+    }
+    
+    if let Some(tag_str) = tags {
+        let tag_list: Vec<String> = tag_str.split(',').map(|s| s.trim().to_string()).collect();
+        profile = profile.with_tags(tag_list);
+    }
+    
+    manager.save_profile(profile);
+    manager.save_to_file(DEFAULT_PROFILE_FILE)?;
+    
+    println!("Saved profile '{}'", name);
+    println!("  Frequency: {} | Sample Rate: {} | Gain: {} dB | Demod: {}",
+        format_frequency(frequency), format_frequency(sample_rate), gain, demod);
+    Ok(())
+}
+
+pub fn profile_load(name: &str) -> Result<()> {
+    let mut manager = profiles::ProfileManager::new();
+    if std::fs::metadata(DEFAULT_PROFILE_FILE).is_ok() {
+        manager.load_from_file(DEFAULT_PROFILE_FILE)?;
+    }
+    
+    match manager.get(name) {
+        Some(p) => {
+            println!("Profile: {}", p.name);
+            println!("  Frequency:    {} Hz", p.center_freq_hz);
+            println!("  Sample Rate:  {} Hz", p.sample_rate_hz);
+            println!("  Gain:         {} dB", p.gain_db);
+            println!("  Demod Mode:   {}", p.demod_mode);
+            if let Some(ref desc) = p.description {
+                println!("  Description:  {}", desc);
+            }
+            if !p.tags.is_empty() {
+                println!("  Tags:         {}", p.tags.join(", "));
+            }
+            println!("  Created:      {}", p.created_at);
+        }
+        None => {
+            println!("Profile '{}' not found.", name);
+        }
+    }
+    Ok(())
+}
+
+pub fn profile_list() -> Result<()> {
+    let mut manager = profiles::ProfileManager::new();
+    if std::fs::metadata(DEFAULT_PROFILE_FILE).is_ok() {
+        let _ = manager.load_from_file(DEFAULT_PROFILE_FILE);
+    }
+    
+    let profiles = manager.list();
+    if profiles.is_empty() {
+        println!("No profiles saved.");
+    } else {
+        println!("{} profile(s):", profiles.len());
+        for p in profiles {
+            println!("  {} — {} Hz, {} demod [{}]",
+                p.name, format_frequency(p.center_freq_hz as f64), p.demod_mode,
+                p.description.as_deref().unwrap_or("no description"));
+        }
+    }
+    Ok(())
+}
+
+pub fn profile_delete(name: &str) -> Result<()> {
+    ensure_profile_dir()?;
+    
+    let mut manager = profiles::ProfileManager::new();
+    if std::fs::metadata(DEFAULT_PROFILE_FILE).is_ok() {
+        let _ = manager.load_from_file(DEFAULT_PROFILE_FILE);
+    }
+    
+    if manager.remove(name).is_some() {
+        manager.save_to_file(DEFAULT_PROFILE_FILE)?;
+        println!("Deleted profile '{}'", name);
+    } else {
+        println!("Profile '{}' not found.", name);
+    }
     Ok(())
 }

@@ -93,7 +93,7 @@ fn demod_am(samples: &[IQSample]) -> Vec<f32> {
 /// freq[n] = (arg(s[n]) - arg(s[n-1])) / (2*pi * dt)
 /// 
 /// Uses atan2(Q, I) for phase, then unwraps and differences.
-fn demod_fm(samples: &[IQSample], sample_rate: f32) -> Vec<f32> {
+pub fn demod_fm(samples: &[IQSample], sample_rate: f32) -> Vec<f32> {
     if samples.len() < 2 {
         return vec![0.0; samples.len()];
     }
