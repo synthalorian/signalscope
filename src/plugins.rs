@@ -1,13 +1,13 @@
+use crate::demod::{DemodPlugin, DemodPluginRegistry};
+use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
 use std::path::Path;
-use anyhow::{Result, Context};
-use crate::demod::{DemodPluginRegistry, DemodPlugin};
 
 /// FFI interface that plugins must implement
-/// 
+///
 /// Plugins are compiled as dynamic libraries (.so on Linux, .dll on Windows, .dylib on macOS)
 /// and must export a `create_dsp_plugin` function that returns a boxed DSPPlugin trait object.
-/// 
+///
 /// # Example C plugin:
 /// ```c
 /// typedef struct {
@@ -16,7 +16,7 @@ use crate::demod::{DemodPluginRegistry, DemodPlugin};
 ///     void (*destroy)(void* state);
 ///     void* state;
 /// } DspPlugin;
-/// 
+///
 /// DspPlugin* create_dsp_plugin() {
 ///     DspPlugin* p = malloc(sizeof(DspPlugin));
 ///     p->name = "my_filter";
@@ -46,17 +46,17 @@ pub struct CDspPlugin {
 /// Trait for DSP plugins (Rust-native)
 pub trait DspPlugin: Send + Sync {
     fn name(&self) -> &str;
-    
+
     /// Process a block of IQ samples
     /// input and output are interleaved I/Q: [I0, Q0, I1, Q1, ...]
     fn process(&mut self, input: &[f32], output: &mut [f32], sample_rate: f32);
-    
+
     /// Set a parameter by name
     fn set_param(&mut self, key: &str, value: f64);
-    
+
     /// Get a parameter by name
     fn get_param(&self, key: &str) -> Option<f64>;
-    
+
     /// Plugin description
     fn description(&self) -> &str {
         ""
@@ -76,16 +76,25 @@ unsafe impl Send for CPluginWrapper {}
 unsafe impl Sync for CPluginWrapper {}
 
 impl CPluginWrapper {
+    /// Create a wrapper from a loaded dynamic library.
+    ///
+    /// # Safety
+    ///
+    /// `lib` must be a loaded plugin library exporting a `create_dsp_plugin`
+    /// symbol with the expected FFI signature. The library is kept alive for
+    /// the lifetime of the wrapper; the plugin's `destroy` callback is invoked
+    /// on drop.
     pub unsafe fn new(lib: Library) -> Result<Self> {
         type CreateFn = unsafe extern "C" fn() -> *mut CDspPlugin;
-        let create: Symbol<CreateFn> = lib.get(b"create_dsp_plugin\0")
+        let create: Symbol<CreateFn> = lib
+            .get(b"create_dsp_plugin\0")
             .context("Plugin missing 'create_dsp_plugin' symbol")?;
-        
+
         let plugin = create();
         if plugin.is_null() {
             return Err(anyhow::anyhow!("Plugin create_dsp_plugin returned null"));
         }
-        
+
         let name = if (*plugin).name.is_null() {
             "unnamed_plugin".to_string()
         } else {
@@ -93,7 +102,7 @@ impl CPluginWrapper {
                 .to_string_lossy()
                 .into_owned()
         };
-        
+
         Ok(CPluginWrapper {
             _lib: lib,
             plugin,
@@ -114,7 +123,7 @@ impl DspPlugin for CPluginWrapper {
             if count == 0 {
                 return;
             }
-            
+
             // Split interleaved input into I/Q
             let mut input_i = Vec::with_capacity(count);
             let mut input_q = Vec::with_capacity(count);
@@ -122,10 +131,10 @@ impl DspPlugin for CPluginWrapper {
                 input_i.push(chunk[0]);
                 input_q.push(chunk[1]);
             }
-            
+
             let mut output_i = vec![0.0f32; count];
             let mut output_q = vec![0.0f32; count];
-            
+
             ((*self.plugin).process)(
                 (*self.plugin).state,
                 input_i.as_ptr(),
@@ -135,7 +144,7 @@ impl DspPlugin for CPluginWrapper {
                 count,
                 sample_rate,
             );
-            
+
             // Interleave output
             for i in 0..count {
                 output[i * 2] = output_i[i];
@@ -147,11 +156,7 @@ impl DspPlugin for CPluginWrapper {
     fn set_param(&mut self, key: &str, value: f64) {
         unsafe {
             let c_key = std::ffi::CString::new(key).unwrap_or_default();
-            ((*self.plugin).set_param)(
-                (*self.plugin).state,
-                c_key.as_ptr(),
-                value,
-            );
+            ((*self.plugin).set_param)((*self.plugin).state, c_key.as_ptr(), value);
         }
     }
 
@@ -192,22 +197,22 @@ impl PluginManager {
             plugin_paths: Vec::new(),
         }
     }
-    
+
     /// Get the demod plugin registry
     pub fn demod_registry(&self) -> &DemodPluginRegistry {
         &self.demod_plugins
     }
-    
+
     /// Get mutable demod plugin registry
     pub fn demod_registry_mut(&mut self) -> &mut DemodPluginRegistry {
         &mut self.demod_plugins
     }
-    
+
     /// Register a demod plugin
     pub fn register_demod(&mut self, plugin: Box<dyn DemodPlugin>) {
         self.demod_plugins.register(plugin);
     }
-    
+
     /// List all demod plugins
     pub fn list_demod_plugins(&self) -> Vec<(&str, &str)> {
         self.demod_plugins.list()
@@ -223,14 +228,14 @@ impl PluginManager {
         let path = path.as_ref();
         let lib = unsafe { Library::new(path) }
             .with_context(|| format!("Failed to load plugin: {}", path.display()))?;
-        
+
         let plugin = unsafe { CPluginWrapper::new(lib) }
             .with_context(|| format!("Failed to initialize plugin: {}", path.display()))?;
-        
+
         let name = plugin.name().to_string();
         let idx = self.dsp_plugins.len();
         self.dsp_plugins.push(Box::new(plugin));
-        
+
         println!("Loaded DSP plugin '{}' from {}", name, path.display());
         Ok(idx)
     }
@@ -238,20 +243,20 @@ impl PluginManager {
     /// Scan plugin paths and load all valid plugins
     pub fn scan_and_load(&mut self) -> Result<usize> {
         let mut files_to_load = Vec::new();
-        
+
         for path_str in &self.plugin_paths {
             let path = Path::new(path_str);
             if !path.exists() {
                 continue;
             }
-            
+
             if path.is_dir() {
                 let entries = std::fs::read_dir(path)?;
                 for entry in entries {
                     let entry = entry?;
                     let file_path = entry.path();
                     let ext = file_path.extension().and_then(|e| e.to_str());
-                    
+
                     if ext == Some("so") || ext == Some("dll") || ext == Some("dylib") {
                         files_to_load.push(file_path);
                     }
@@ -260,7 +265,7 @@ impl PluginManager {
                 files_to_load.push(path.to_path_buf());
             }
         }
-        
+
         let mut loaded = 0;
         for file_path in files_to_load {
             if self.load_plugin(&file_path).is_ok() {
@@ -281,7 +286,9 @@ impl PluginManager {
 
     /// List all loaded DSP plugins
     pub fn list_dsp(&self) -> Vec<(&str, usize)> {
-        self.dsp_plugins.iter().enumerate()
+        self.dsp_plugins
+            .iter()
+            .enumerate()
             .map(|(i, p)| (p.name(), i))
             .collect()
     }
@@ -314,8 +321,16 @@ impl PluginManager {
     }
 
     /// Process samples through a specific DSP plugin
-    pub fn process_single(&mut self, idx: usize, input: &[f32], output: &mut [f32], sample_rate: f32) -> Result<()> {
-        let plugin = self.dsp_plugins.get_mut(idx)
+    pub fn process_single(
+        &mut self,
+        idx: usize,
+        input: &[f32],
+        output: &mut [f32],
+        sample_rate: f32,
+    ) -> Result<()> {
+        let plugin = self
+            .dsp_plugins
+            .get_mut(idx)
             .ok_or_else(|| anyhow::anyhow!("Plugin index {} not found", idx))?;
         plugin.process(input, output, sample_rate);
         Ok(())
@@ -323,7 +338,9 @@ impl PluginManager {
 
     /// Set parameter on a specific DSP plugin
     pub fn set_param(&mut self, idx: usize, key: &str, value: f64) -> Result<()> {
-        let plugin = self.dsp_plugins.get_mut(idx)
+        let plugin = self
+            .dsp_plugins
+            .get_mut(idx)
             .ok_or_else(|| anyhow::anyhow!("Plugin index {} not found", idx))?;
         plugin.set_param(key, value);
         Ok(())

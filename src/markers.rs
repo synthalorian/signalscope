@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use anyhow::{Result, Context};
 
 /// A frequency marker representing a detected or user-placed signal peak
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,9 +132,14 @@ impl MarkerBank {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let data = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read marker file: {}", path.as_ref().display()))?;
-        let markers: BTreeMap<u64, FrequencyMarker> = serde_json::from_str(&data)
-            .with_context(|| format!("Failed to parse marker JSON from: {}", path.as_ref().display()))?;
-        
+        let markers: BTreeMap<u64, FrequencyMarker> =
+            serde_json::from_str(&data).with_context(|| {
+                format!(
+                    "Failed to parse marker JSON from: {}",
+                    path.as_ref().display()
+                )
+            })?;
+
         let next_id = markers.keys().max().copied().unwrap_or(0) + 1;
         Ok(MarkerBank { markers, next_id })
     }
@@ -166,7 +171,7 @@ impl MarkerBank {
                 continue; // Skip header
             }
             let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 1 {
+            if !parts.is_empty() {
                 if let Ok(freq) = parts[0].parse::<f64>() {
                     let mut marker = FrequencyMarker::new(freq);
                     if parts.len() > 1 {
@@ -190,6 +195,12 @@ impl MarkerBank {
 pub struct MarkerManager {
     bank: MarkerBank,
     auto_save_path: Option<String>,
+}
+
+impl Default for MarkerManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MarkerManager {
@@ -275,7 +286,7 @@ mod tests {
         let m = FrequencyMarker::new(100e6)
             .with_amplitude(-30.5)
             .with_label("FM Radio");
-        
+
         assert_eq!(m.frequency, 100e6);
         assert_eq!(m.amplitude_db, Some(-30.5));
         assert_eq!(m.label, Some("FM Radio".to_string()));
@@ -287,7 +298,7 @@ mod tests {
         let id = bank.add(FrequencyMarker::new(100e6));
         assert_eq!(bank.len(), 1);
         assert!(bank.get(id).is_some());
-        
+
         bank.remove(id);
         assert!(bank.is_empty());
     }
@@ -297,7 +308,7 @@ mod tests {
         let mut bank = MarkerBank::new();
         bank.add(FrequencyMarker::new(100e6));
         bank.add(FrequencyMarker::new(200e6));
-        
+
         let found = bank.find_near(100.1e6, 1e6);
         assert!(found.is_some());
         assert!((found.unwrap().1.frequency - 100e6).abs() < 1.0);
@@ -307,7 +318,7 @@ mod tests {
     fn test_format_frequency() {
         let m = FrequencyMarker::new(100e6);
         assert_eq!(m.format_frequency(), "100.000 MHz");
-        
+
         let m = FrequencyMarker::new(2.4e9);
         assert_eq!(m.format_frequency(), "2.400 GHz");
     }

@@ -1,10 +1,10 @@
 use crate::capture::{CaptureConfig, IQSample};
-use crate::dsp::{compute_fft, apply_window, iq_to_tuple};
+use crate::dsp::{apply_window, compute_fft, iq_to_tuple};
+use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use anyhow::{Result, anyhow};
 
 /// Scanner configuration
 #[derive(Debug, Clone)]
@@ -86,12 +86,17 @@ impl FrequencyScanner {
         F: FnMut(&CaptureConfig, usize) -> Result<Vec<IQSample>>,
     {
         let frequencies = self.get_frequencies();
-        println!("Frequency scanner: scanning {} frequencies", frequencies.len());
-        println!("Range: {:.2} MHz - {:.2} MHz | Step: {} kHz | Squelch: {:.1} dB",
+        println!(
+            "Frequency scanner: scanning {} frequencies",
+            frequencies.len()
+        );
+        println!(
+            "Range: {:.2} MHz - {:.2} MHz | Step: {} kHz | Squelch: {:.1} dB",
             self.config.start_freq_hz as f64 / 1e6,
             self.config.end_freq_hz as f64 / 1e6,
             self.config.step_hz / 1000,
-            self.config.squelch_db);
+            self.config.squelch_db
+        );
         println!("Press Ctrl+C to stop\n");
 
         let mut detected_signals = Vec::new();
@@ -111,7 +116,12 @@ impl FrequencyScanner {
                 device_index: 0,
             };
 
-            print!("\r[{}/{}] {:.3} MHz...", i + 1, frequencies.len(), freq_hz as f64 / 1e6);
+            print!(
+                "\r[{}/{}] {:.3} MHz...",
+                i + 1,
+                frequencies.len(),
+                freq_hz as f64 / 1e6
+            );
             let _ = std::io::Write::flush(&mut std::io::stdout());
 
             match capture_fn(&capture_config, self.config.sample_count) {
@@ -122,7 +132,7 @@ impl FrequencyScanner {
 
                     // Compute FFT and measure power
                     let power = self.measure_channel_power(&samples);
-                    
+
                     // Update noise floor estimate (use lowest 20% of readings)
                     if noise_samples < 10 {
                         noise_floor_estimate = power;
@@ -135,7 +145,8 @@ impl FrequencyScanner {
 
                     if snr >= self.config.squelch_db {
                         // Estimate bandwidth
-                        let bandwidth = self.estimate_bandwidth(&samples, self.config.sample_rate_hz as f32);
+                        let bandwidth =
+                            self.estimate_bandwidth(&samples, self.config.sample_rate_hz as f32);
 
                         let signal = ScannedSignal {
                             frequency_hz: freq_hz,
@@ -166,13 +177,20 @@ impl FrequencyScanner {
 
         println!();
         if detected_signals.is_empty() {
-            println!("No signals detected above {:.1} dB squelch threshold.", self.config.squelch_db);
+            println!(
+                "No signals detected above {:.1} dB squelch threshold.",
+                self.config.squelch_db
+            );
         } else {
             println!("Detected {} signal(s):", detected_signals.len());
-            println!("{:<6} {:<16} {:<12} {:<12} {:<12}", "#", "Frequency", "Power", "SNR", "Bandwidth");
+            println!(
+                "{:<6} {:<16} {:<12} {:<12} {:<12}",
+                "#", "Frequency", "Power", "SNR", "Bandwidth"
+            );
             println!("{}", "-".repeat(60));
             for (i, sig) in detected_signals.iter().enumerate() {
-                println!("{:<6} {:<16} {:<12.1} {:<12.1} {:<12.0}",
+                println!(
+                    "{:<6} {:<16} {:<12.1} {:<12.1} {:<12.0}",
                     i + 1,
                     format_frequency(sig.frequency_hz),
                     sig.power_db,
@@ -191,10 +209,8 @@ impl FrequencyScanner {
             return -999.0;
         }
 
-        let power_sum: f32 = samples.iter()
-            .map(|s| s.i * s.i + s.q * s.q)
-            .sum();
-        
+        let power_sum: f32 = samples.iter().map(|s| s.i * s.i + s.q * s.q).sum();
+
         let avg_power = power_sum / samples.len() as f32;
         if avg_power <= 0.0 {
             return -999.0;
@@ -209,14 +225,14 @@ impl FrequencyScanner {
         let tuples = iq_to_tuple(samples);
         let fft_size = tuples.len().next_power_of_two().min(2048);
         let mut windowed: Vec<(f32, f32)> = tuples.iter().take(fft_size).copied().collect();
-        
+
         while windowed.len() < fft_size {
             windowed.push((0.0, 0.0));
         }
-        
+
         apply_window(&mut windowed);
         let result = compute_fft(&windowed, fft_size);
-        
+
         let max_val = result.bins.iter().copied().fold(0.0f32, f32::max);
         if max_val <= 0.0 {
             return 0.0;
@@ -280,7 +296,7 @@ pub fn parse_frequency_list(s: &str) -> Result<Vec<u64>> {
         if part.is_empty() {
             continue;
         }
-        
+
         // Try parsing as number (handles scientific notation like 100e6)
         let freq = if part.contains('e') || part.contains('E') {
             part.parse::<f64>()
@@ -289,13 +305,13 @@ pub fn parse_frequency_list(s: &str) -> Result<Vec<u64>> {
             part.parse::<u64>()
                 .map_err(|_| anyhow!("Invalid frequency: {}", part))?
         };
-        
+
         freqs.push(freq);
     }
-    
+
     if freqs.is_empty() {
         return Err(anyhow!("No valid frequencies in list"));
     }
-    
+
     Ok(freqs)
 }

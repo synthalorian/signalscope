@@ -1,6 +1,5 @@
 use crate::capture::IQSample;
-use crate::dsp::{FFTResult, compute_fft, apply_window};
-use std::f32::consts::PI;
+use crate::dsp::{apply_window, compute_fft};
 
 /// Classification result for a signal
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +50,7 @@ impl SignalClassifier {
     }
 
     /// Classify a signal from its IQ samples
-    /// 
+    ///
     /// Uses spectral analysis to determine the modulation type:
     /// - AM: Strong carrier peak with symmetric sidebands
     /// - FM: Wide, relatively flat spectrum with Bessel-like shape
@@ -72,12 +71,12 @@ impl SignalClassifier {
         let tuples: Vec<(f32, f32)> = samples.iter().map(|s| (s.i, s.q)).collect();
         let fft_size = tuples.len().next_power_of_two().min(4096);
         let mut windowed: Vec<(f32, f32)> = tuples.iter().take(fft_size).copied().collect();
-        
+
         // Pad if needed
         while windowed.len() < fft_size {
             windowed.push((0.0, 0.0));
         }
-        
+
         apply_window(&mut windowed);
         let fft_result = compute_fft(&windowed, fft_size);
         let bins = &fft_result.bins;
@@ -211,8 +210,8 @@ impl SignalClassifier {
         }
 
         // Convert to similarity: 1.0 = identical, 0.0 = completely different
-        let similarity = 1.0 - (diff_sum / sum).min(1.0);
-        similarity
+
+        1.0 - (diff_sum / sum).min(1.0)
     }
 
     /// Spectral flatness measure (geometric mean / arithmetic mean)
@@ -224,10 +223,14 @@ impl SignalClassifier {
         }
 
         // Use linear magnitudes (bins are already in dB, convert back)
-        let linear: Vec<f32> = bins.iter().map(|&db| {
-            let db_clamped = db.max(0.0);
-            10.0f32.powf(db_clamped / 20.0) - 1.0 // Undo the 1.0 + mag scaling
-        }).map(|v| v.max(1e-10)).collect();
+        let linear: Vec<f32> = bins
+            .iter()
+            .map(|&db| {
+                let db_clamped = db.max(0.0);
+                10.0f32.powf(db_clamped / 20.0) - 1.0 // Undo the 1.0 + mag scaling
+            })
+            .map(|v| v.max(1e-10))
+            .collect();
 
         let sum: f32 = linear.iter().sum();
         if sum <= 0.0 {
@@ -240,7 +243,7 @@ impl SignalClassifier {
         let log_sum: f32 = linear.iter().map(|&v| v.ln()).sum();
         let geometric_mean = (log_sum / n as f32).exp();
 
-        (geometric_mean / arithmetic_mean).min(1.0).max(0.0)
+        (geometric_mean / arithmetic_mean).clamp(0.0, 1.0)
     }
 
     /// Detect if there's a strong carrier peak in the center
@@ -252,8 +255,10 @@ impl SignalClassifier {
 
         let center = n / 2;
         let carrier_bins = 3usize;
-        let carrier_power: f32 = bins[center.saturating_sub(carrier_bins)..=(center + carrier_bins).min(n - 1)]
-            .iter().sum();
+        let carrier_power: f32 = bins
+            [center.saturating_sub(carrier_bins)..=(center + carrier_bins).min(n - 1)]
+            .iter()
+            .sum();
 
         let sideband_bins = 10usize;
         let left_start = center.saturating_sub(carrier_bins + sideband_bins);
@@ -262,7 +267,8 @@ impl SignalClassifier {
         let right_end = (center + carrier_bins + sideband_bins).min(n - 1);
 
         let sideband_power: f32 = if left_end > left_start && right_end > right_start {
-            bins[left_start..left_end].iter().sum::<f32>() + bins[right_start..right_end].iter().sum::<f32>()
+            bins[left_start..left_end].iter().sum::<f32>()
+                + bins[right_start..right_end].iter().sum::<f32>()
         } else {
             carrier_power
         };
@@ -299,11 +305,15 @@ impl Default for SignalClassifier {
 }
 
 /// Batch classify multiple frequency regions
-pub fn classify_regions(samples: &[IQSample], sample_rate: f32, regions: &[(f32, f32)]) -> Vec<(f32, ClassificationResult)> {
+pub fn classify_regions(
+    samples: &[IQSample],
+    sample_rate: f32,
+    regions: &[(f32, f32)],
+) -> Vec<(f32, ClassificationResult)> {
     let classifier = SignalClassifier::new();
     let mut results = Vec::new();
 
-    for &(start_hz, end_hz) in regions {
+    for &(start_hz, _end_hz) in regions {
         // Extract region samples (simple approach: use full samples but note the region)
         // For a proper implementation, we'd shift the region to baseband first
         let result = classifier.classify(samples, sample_rate);

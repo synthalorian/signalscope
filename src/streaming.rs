@@ -1,7 +1,7 @@
+use anyhow::{Context, Result};
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use anyhow::{Result, Context};
 
 /// UDP streaming configuration
 #[derive(Debug, Clone)]
@@ -69,10 +69,10 @@ pub struct UdpStreamer {
 
 impl UdpStreamer {
     pub fn new(config: UdpStreamConfig) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")
-            .context("Failed to bind UDP socket")?;
-        
-        socket.connect(&config.address())
+        let socket = UdpSocket::bind("0.0.0.0:0").context("Failed to bind UDP socket")?;
+
+        socket
+            .connect(config.address())
             .with_context(|| format!("Failed to connect UDP socket to {}", config.address()))?;
 
         Ok(Self {
@@ -132,7 +132,7 @@ impl UdpStreamer {
     /// Stream stereo audio samples (interleaved L/R)
     pub fn stream_stereo_audio(&mut self, samples: &[(f32, f32)]) -> Result<usize> {
         let mut bytes = Vec::with_capacity(samples.len() * 8);
-        
+
         match self.config.format {
             StreamFormat::AudioF32 | StreamFormat::RawIQ => {
                 for (l, r) in samples {
@@ -149,7 +149,7 @@ impl UdpStreamer {
                 }
             }
         }
-        
+
         self.send_chunks(&bytes)
     }
 
@@ -174,7 +174,7 @@ impl UdpStreamer {
                     break;
                 }
             }
-            
+
             self.sequence_number = self.sequence_number.wrapping_add(1);
         }
 
@@ -207,7 +207,11 @@ where
     F: FnMut() -> Option<Vec<(f32, f32)>>,
 {
     let mut streamer = UdpStreamer::new(config.clone())?;
-    println!("Streaming IQ to {} (format: {})", config.address(), config.format);
+    println!(
+        "Streaming IQ to {} (format: {})",
+        config.address(),
+        config.format
+    );
     println!("Press Ctrl+C to stop");
 
     while running.load(Ordering::SeqCst) {
@@ -219,7 +223,10 @@ where
     }
 
     let stats = streamer.stats();
-    println!("\nStreamed {} packets ({} bytes)", stats.packets_sent, stats.bytes_sent);
+    println!(
+        "\nStreamed {} packets ({} bytes)",
+        stats.packets_sent, stats.bytes_sent
+    );
     Ok(())
 }
 
