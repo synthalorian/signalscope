@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use anyhow::{Result, Context};
 
 /// A saved receiver configuration profile
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,8 +92,13 @@ impl ProfileManager {
     pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let data = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read profile file: {}", path.as_ref().display()))?;
-        let profiles: HashMap<String, ReceiverProfile> = serde_json::from_str(&data)
-            .with_context(|| format!("Failed to parse profile JSON from: {}", path.as_ref().display()))?;
+        let profiles: HashMap<String, ReceiverProfile> =
+            serde_json::from_str(&data).with_context(|| {
+                format!(
+                    "Failed to parse profile JSON from: {}",
+                    path.as_ref().display()
+                )
+            })?;
         self.profiles = profiles;
         Ok(())
     }
@@ -138,7 +143,7 @@ mod tests {
             .with_gain(30)
             .with_demod("fm-stereo")
             .with_description("Local FM broadcast");
-        
+
         assert_eq!(p.name, "FM Radio");
         assert_eq!(p.center_freq_hz, 100_000_000);
         assert_eq!(p.gain_db, 30);

@@ -1,10 +1,10 @@
+use anyhow::Result;
+use chrono::{Datelike, Local, NaiveTime, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
-use chrono::{Local, NaiveTime, Datelike, Timelike, Weekday};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use anyhow::Result;
 
 /// A scheduled recording task
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,7 +21,13 @@ pub struct RecordingSchedule {
 }
 
 impl RecordingSchedule {
-    pub fn new(name: impl Into<String>, frequency_hz: u64, duration_sec: u64, output_path: impl Into<String>, cron_expr: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        frequency_hz: u64,
+        duration_sec: u64,
+        output_path: impl Into<String>,
+        cron_expr: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             frequency_hz,
@@ -44,11 +50,11 @@ impl RecordingSchedule {
 /// Parsed cron expression
 #[derive(Debug, Clone)]
 struct CronExpr {
-    minutes: Vec<u8>,     // 0-59
-    hours: Vec<u8>,       // 0-23
-    days: Vec<u8>,        // 1-31
-    months: Vec<u8>,     // 1-12
-    weekdays: Vec<u8>,   // 0-6 (0=Sunday)
+    minutes: Vec<u8>,  // 0-59
+    hours: Vec<u8>,    // 0-23
+    days: Vec<u8>,     // 1-31
+    months: Vec<u8>,   // 1-12
+    weekdays: Vec<u8>, // 0-6 (0=Sunday)
 }
 
 impl CronExpr {
@@ -57,7 +63,9 @@ impl CronExpr {
     fn parse(expr: &str) -> Result<Self> {
         let parts: Vec<&str> = expr.split_whitespace().collect();
         if parts.len() != 5 {
-            return Err(anyhow::anyhow!("Cron expression must have 5 fields: min hour day month dow"));
+            return Err(anyhow::anyhow!(
+                "Cron expression must have 5 fields: min hour day month dow"
+            ));
         }
 
         Ok(Self {
@@ -77,8 +85,9 @@ impl CronExpr {
                 for v in min..=max {
                     values.push(v);
                 }
-            } else if part.starts_with("*/") {
-                let step: u8 = part[2..].parse()
+            } else if let Some(step_str) = part.strip_prefix("*/") {
+                let step: u8 = step_str
+                    .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid step in cron: {}", part))?;
                 if step == 0 {
                     return Err(anyhow::anyhow!("Step cannot be zero"));
@@ -93,9 +102,11 @@ impl CronExpr {
                 if range.len() != 2 {
                     return Err(anyhow::anyhow!("Invalid range: {}", part));
                 }
-                let start: u8 = range[0].parse()
+                let start: u8 = range[0]
+                    .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid range start: {}", range[0]))?;
-                let end: u8 = range[1].parse()
+                let end: u8 = range[1]
+                    .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid range end: {}", range[1]))?;
                 for v in start..=end {
                     if v >= min && v <= max {
@@ -103,12 +114,18 @@ impl CronExpr {
                     }
                 }
             } else {
-                let v: u8 = part.parse()
+                let v: u8 = part
+                    .parse()
                     .map_err(|_| anyhow::anyhow!("Invalid value: {}", part))?;
                 if v >= min && v <= max {
                     values.push(v);
                 } else {
-                    return Err(anyhow::anyhow!("Value {} out of range [{}-{}]", v, min, max));
+                    return Err(anyhow::anyhow!(
+                        "Value {} out of range [{}-{}]",
+                        v,
+                        min,
+                        max
+                    ));
                 }
             }
         }
@@ -124,7 +141,9 @@ impl CronExpr {
             && self.hours.contains(&(dt.hour() as u8))
             && self.days.contains(&(dt.day() as u8))
             && self.months.contains(&(dt.month() as u8))
-            && self.weekdays.contains(&(dt.weekday().num_days_from_sunday() as u8))
+            && self
+                .weekdays
+                .contains(&(dt.weekday().num_days_from_sunday() as u8))
     }
 }
 
@@ -161,8 +180,14 @@ impl RecordingScheduler {
     where
         F: FnMut(&RecordingSchedule) -> Result<()>,
     {
-        println!("Recording scheduler started with {} schedule(s)", self.schedules.len());
-        println!("Checking every {} seconds. Press Ctrl+C to stop.", self.check_interval_sec);
+        println!(
+            "Recording scheduler started with {} schedule(s)",
+            self.schedules.len()
+        );
+        println!(
+            "Checking every {} seconds. Press Ctrl+C to stop.",
+            self.check_interval_sec
+        );
 
         let mut last_checked_minute: Option<u8> = None;
 
@@ -196,30 +221,40 @@ impl RecordingScheduler {
                                 };
 
                                 if should_run {
-                                    println!("[{}] Executing scheduled recording: {} at {} MHz",
+                                    println!(
+                                        "[{}] Executing scheduled recording: {} at {} MHz",
                                         now.format("%Y-%m-%d %H:%M:%S"),
                                         schedule.name,
-                                        schedule.frequency_hz as f64 / 1e6);
-                                    
+                                        schedule.frequency_hz as f64 / 1e6
+                                    );
+
                                     match execute(schedule) {
                                         Ok(()) => {
                                             schedule.last_run = Some(Local::now());
                                             schedule.run_count += 1;
-                                            println!("[{}] Recording {} completed",
+                                            println!(
+                                                "[{}] Recording {} completed",
                                                 Local::now().format("%Y-%m-%d %H:%M:%S"),
-                                                schedule.name);
+                                                schedule.name
+                                            );
                                         }
                                         Err(e) => {
-                                            eprintln!("[{}] Recording {} failed: {}",
+                                            eprintln!(
+                                                "[{}] Recording {} failed: {}",
                                                 Local::now().format("%Y-%m-%d %H:%M:%S"),
-                                                schedule.name, e);
+                                                schedule.name,
+                                                e
+                                            );
                                         }
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Invalid cron expression for schedule '{}': {}", schedule.name, e);
+                            eprintln!(
+                                "Invalid cron expression for schedule '{}': {}",
+                                schedule.name, e
+                            );
                         }
                     }
                 }
@@ -262,28 +297,59 @@ impl Default for RecordingScheduler {
 }
 
 /// Quick helper to create a daily schedule at a specific time
-pub fn daily_at(name: &str, frequency_hz: u64, duration_sec: u64, output_path: &str, time: &str) -> Result<RecordingSchedule> {
+pub fn daily_at(
+    name: &str,
+    frequency_hz: u64,
+    duration_sec: u64,
+    output_path: &str,
+    time: &str,
+) -> Result<RecordingSchedule> {
     let t = NaiveTime::parse_from_str(time, "%H:%M")
         .map_err(|_| anyhow::anyhow!("Time must be in HH:MM format"))?;
-    
+
     let cron = format!("{} {} * * *", t.minute(), t.hour());
-    
-    Ok(RecordingSchedule::new(name, frequency_hz, duration_sec, output_path, cron))
+
+    Ok(RecordingSchedule::new(
+        name,
+        frequency_hz,
+        duration_sec,
+        output_path,
+        cron,
+    ))
 }
 
 /// Quick helper to create an hourly schedule
-pub fn hourly(name: &str, frequency_hz: u64, duration_sec: u64, output_path: &str, minute: u8) -> RecordingSchedule {
+pub fn hourly(
+    name: &str,
+    frequency_hz: u64,
+    duration_sec: u64,
+    output_path: &str,
+    minute: u8,
+) -> RecordingSchedule {
     let cron = format!("{} * * * *", minute.clamp(0, 59));
     RecordingSchedule::new(name, frequency_hz, duration_sec, output_path, cron)
 }
 
 /// Quick helper to create a weekly schedule
-pub fn weekly_at(name: &str, frequency_hz: u64, duration_sec: u64, output_path: &str, weekday: Weekday, time: &str) -> Result<RecordingSchedule> {
+pub fn weekly_at(
+    name: &str,
+    frequency_hz: u64,
+    duration_sec: u64,
+    output_path: &str,
+    weekday: Weekday,
+    time: &str,
+) -> Result<RecordingSchedule> {
     let t = NaiveTime::parse_from_str(time, "%H:%M")
         .map_err(|_| anyhow::anyhow!("Time must be in HH:MM format"))?;
-    
+
     let wd = weekday.num_days_from_sunday() as u8;
     let cron = format!("{} {} * * {}", t.minute(), t.hour(), wd);
-    
-    Ok(RecordingSchedule::new(name, frequency_hz, duration_sec, output_path, cron))
+
+    Ok(RecordingSchedule::new(
+        name,
+        frequency_hz,
+        duration_sec,
+        output_path,
+        cron,
+    ))
 }

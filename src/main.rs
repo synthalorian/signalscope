@@ -1,18 +1,5 @@
 use clap::{Parser, Subcommand};
-
-mod capture;
-mod display;
-mod dsp;
-mod cli;
-mod demod;
-mod markers;
-mod plugins;
-mod profiles;
-mod classifier;
-mod streaming;
-mod scheduler;
-mod scanner;
-mod rds;
+use signalscope::cli;
 
 #[derive(Parser)]
 #[command(name = "signalscope")]
@@ -287,10 +274,10 @@ enum MarkerCommands {
         #[arg(short, long)]
         file: Option<String>,
     },
-        Remove {
-            #[arg(short, long)]
-            frequency: f64,
-        },
+    Remove {
+        #[arg(short, long)]
+        frequency: f64,
+    },
     /// Clear all markers
     Clear,
     /// Import markers from CSV
@@ -332,24 +319,48 @@ fn main() -> anyhow::Result<()> {
 
     match args.cmd {
         Commands::Devices => cli::list_devices(),
-        Commands::Spectrum { center_freq, sample_rate, fft_size } => {
-            cli::spectrum(center_freq, sample_rate, fft_size)
-        }
-        Commands::Record { output, duration, center_freq } => {
-            cli::record(&output, duration, center_freq)
-        }
+        Commands::Spectrum {
+            center_freq,
+            sample_rate,
+            fft_size,
+        } => cli::spectrum(center_freq, sample_rate, fft_size),
+        Commands::Record {
+            output,
+            duration,
+            center_freq,
+        } => cli::record(&output, duration, center_freq),
         Commands::Replay { input } => cli::replay(&input),
         Commands::TestSignal { freq } => cli::test_signal(freq),
-        Commands::Demod { mode, input, output, sample_rate, carrier_offset, stereo } => {
-            cli::demodulate(&mode, &input, &output, sample_rate, carrier_offset, stereo)
-        }
-        Commands::PeakList { input, sample_rate, center_freq, fft_size, min_prominence, max_peaks } => {
-            cli::peak_list(&input, sample_rate, center_freq, fft_size, min_prominence, max_peaks)
-        }
+        Commands::Demod {
+            mode,
+            input,
+            output,
+            sample_rate,
+            carrier_offset,
+            stereo,
+        } => cli::demodulate(&mode, &input, &output, sample_rate, carrier_offset, stereo),
+        Commands::PeakList {
+            input,
+            sample_rate,
+            center_freq,
+            fft_size,
+            min_prominence,
+            max_peaks,
+        } => cli::peak_list(
+            &input,
+            sample_rate,
+            center_freq,
+            fft_size,
+            min_prominence,
+            max_peaks,
+        ),
         Commands::Markers { cmd } => match cmd {
-            MarkerCommands::Add { frequency, label, snap_file, snap_sample_rate } => {
-                cli::marker_add(frequency, label, snap_file, snap_sample_rate)
-            }
+            MarkerCommands::Add {
+                frequency,
+                label,
+                snap_file,
+                snap_sample_rate,
+            } => cli::marker_add(frequency, label, snap_file, snap_sample_rate),
             MarkerCommands::List { file } => cli::marker_list(file),
             MarkerCommands::Remove { frequency } => cli::marker_remove(frequency),
             MarkerCommands::Clear => cli::marker_clear(),
@@ -360,32 +371,83 @@ fn main() -> anyhow::Result<()> {
             PluginCommands::List => cli::plugin_list(),
             PluginCommands::Load { path } => cli::plugin_load(&path),
             PluginCommands::Scan => cli::plugin_scan(),
-            PluginCommands::SetParam { index, key, value } => cli::plugin_set_param(index, &key, value),
+            PluginCommands::SetParam { index, key, value } => {
+                cli::plugin_set_param(index, &key, value)
+            }
         },
         Commands::Schedule { cmd } => match cmd {
-            ScheduleCommands::Add { name, frequency, duration, output, cron, sample_rate } => {
-                cli::schedule_add(&name, frequency, duration, &output, &cron, sample_rate)
-            }
+            ScheduleCommands::Add {
+                name,
+                frequency,
+                duration,
+                output,
+                cron,
+                sample_rate,
+            } => cli::schedule_add(&name, frequency, duration, &output, &cron, sample_rate),
             ScheduleCommands::List => cli::schedule_list(),
             ScheduleCommands::Remove { name } => cli::schedule_remove(&name),
             ScheduleCommands::Run => cli::schedule_run(),
         },
-        Commands::Classify { input, sample_rate } => {
-            cli::classify(&input, sample_rate)
-        }
-        Commands::Rds { input, sample_rate, blocks } => {
-            cli::rds_decode(&input, sample_rate, blocks)
-        }
-        Commands::Scan { start_freq, end_freq, step, squelch, dwell_ms, freq_list, scan_all, sample_rate } => {
-            cli::scan(start_freq, end_freq, step, squelch, dwell_ms, freq_list, scan_all, sample_rate)
-        }
-        Commands::Stream { host, port, format, center_freq, input, sample_rate, duration } => {
-            cli::stream(&host, port, &format, center_freq, input.as_deref(), sample_rate, duration)
-        }
+        Commands::Classify { input, sample_rate } => cli::classify(&input, sample_rate),
+        Commands::Rds {
+            input,
+            sample_rate,
+            blocks,
+        } => cli::rds_decode(&input, sample_rate, blocks),
+        Commands::Scan {
+            start_freq,
+            end_freq,
+            step,
+            squelch,
+            dwell_ms,
+            freq_list,
+            scan_all,
+            sample_rate,
+        } => cli::scan(
+            start_freq,
+            end_freq,
+            step,
+            squelch,
+            dwell_ms,
+            freq_list,
+            scan_all,
+            sample_rate,
+        ),
+        Commands::Stream {
+            host,
+            port,
+            format,
+            center_freq,
+            input,
+            sample_rate,
+            duration,
+        } => cli::stream(
+            &host,
+            port,
+            &format,
+            center_freq,
+            input.as_deref(),
+            sample_rate,
+            duration,
+        ),
         Commands::Profile { cmd } => match cmd {
-            ProfileCommands::Save { name, frequency, sample_rate, gain, demod, description, tags } => {
-                cli::profile_save(&name, frequency, sample_rate, gain, &demod, description, tags)
-            }
+            ProfileCommands::Save {
+                name,
+                frequency,
+                sample_rate,
+                gain,
+                demod,
+                description,
+                tags,
+            } => cli::profile_save(
+                &name,
+                frequency,
+                sample_rate,
+                gain,
+                &demod,
+                description,
+                tags,
+            ),
             ProfileCommands::Load { name } => cli::profile_load(&name),
             ProfileCommands::List => cli::profile_list(),
             ProfileCommands::Delete { name } => cli::profile_delete(&name),

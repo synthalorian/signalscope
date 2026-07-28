@@ -43,7 +43,12 @@ pub fn parse_mode(mode: &str) -> Option<DemodMode> {
 }
 
 /// Demodulate IQ samples to audio-frequency real samples
-pub fn demodulate(samples: &[IQSample], sample_rate: f32, mode: DemodMode, carrier_offset: f32) -> Vec<f32> {
+pub fn demodulate(
+    samples: &[IQSample],
+    sample_rate: f32,
+    mode: DemodMode,
+    carrier_offset: f32,
+) -> Vec<f32> {
     match mode {
         DemodMode::AM => demod_am(samples),
         DemodMode::FM => demod_fm(samples, sample_rate),
@@ -52,9 +57,12 @@ pub fn demodulate(samples: &[IQSample], sample_rate: f32, mode: DemodMode, carri
             // For compatibility with mono output, mix to mono
             stereo.iter().map(|(l, r)| (l + r) * 0.5).collect()
         }
-        DemodMode::SSB | DemodMode::SSB_LSB => {
-            demod_ssb_hilbert(samples, sample_rate, carrier_offset, mode == DemodMode::SSB_LSB)
-        }
+        DemodMode::SSB | DemodMode::SSB_LSB => demod_ssb_hilbert(
+            samples,
+            sample_rate,
+            carrier_offset,
+            mode == DemodMode::SSB_LSB,
+        ),
     }
 }
 
@@ -74,13 +82,14 @@ pub fn demodulate_fm_stereo(samples: &[IQSample], sample_rate: f32) -> Vec<f32> 
 // ============================================================================
 
 /// AM Envelope Detection
-/// 
+///
 /// Extracts the amplitude envelope from the complex IQ signal.
 /// Output is the magnitude of each complex sample: sqrt(I^2 + Q^2)
 fn demod_am(samples: &[IQSample]) -> Vec<f32> {
-    samples.iter().map(|s| {
-        (s.i * s.i + s.q * s.q).sqrt()
-    }).collect()
+    samples
+        .iter()
+        .map(|s| (s.i * s.i + s.q * s.q).sqrt())
+        .collect()
 }
 
 // ============================================================================
@@ -88,10 +97,10 @@ fn demod_am(samples: &[IQSample]) -> Vec<f32> {
 // ============================================================================
 
 /// FM Discriminator (Frequency Demodulation)
-/// 
+///
 /// Computes instantaneous frequency by taking the derivative of the phase:
 /// freq[n] = (arg(s[n]) - arg(s[n-1])) / (2*pi * dt)
-/// 
+///
 /// Uses atan2(Q, I) for phase, then unwraps and differences.
 pub fn demod_fm(samples: &[IQSample], sample_rate: f32) -> Vec<f32> {
     if samples.len() < 2 {
@@ -100,26 +109,26 @@ pub fn demod_fm(samples: &[IQSample], sample_rate: f32) -> Vec<f32> {
 
     let mut output = Vec::with_capacity(samples.len());
     let dt = 1.0 / sample_rate;
-    
+
     // Phase of first sample
     let mut prev_phase = samples[0].q.atan2(samples[0].i);
     output.push(0.0); // First sample has no delta
 
-    for i in 1..samples.len() {
-        let phase = samples[i].q.atan2(samples[i].i);
+    for s in samples.iter().skip(1) {
+        let phase = s.q.atan2(s.i);
         let mut delta = phase - prev_phase;
-        
+
         // Unwrap phase: if jump > pi, subtract 2pi; if jump < -pi, add 2pi
         if delta > PI {
             delta -= 2.0 * PI;
         } else if delta < -PI {
             delta += 2.0 * PI;
         }
-        
+
         // Instantaneous frequency = d(phase)/dt / (2*pi)
         let freq = delta / (2.0 * PI * dt);
         output.push(freq);
-        
+
         prev_phase = phase;
     }
 
@@ -131,13 +140,13 @@ pub fn demod_fm(samples: &[IQSample], sample_rate: f32) -> Vec<f32> {
 // ============================================================================
 
 /// FM Broadcast Stereo Demodulator
-/// 
+///
 /// FM broadcast stereo encoding:
 /// - Baseband 0-15kHz: L+R (mono compatible)
 /// - 19kHz pilot tone
 /// - 23-53kHz: L-R double-sideband suppressed carrier, modulated on 38kHz subcarrier
 /// - 57-59kHz: RDS (Radio Data System) - ignored here
-/// 
+///
 /// This demodulator:
 /// 1. First FM-demodulates to get the baseband multiplex signal
 /// 2. Extracts the 19kHz pilot tone using a bandpass filter
@@ -154,25 +163,25 @@ fn demod_fm_stereo(samples: &[IQSample], sample_rate: f32) -> Vec<(f32, f32)> {
 
     // Step 1: FM demodulate to get baseband multiplex signal
     let multiplex = demod_fm(samples, sample_rate);
-    
+
     // Step 2: Extract 19kHz pilot tone
     let pilot = bandpass_filter(&multiplex, sample_rate, 18_900.0, 19_100.0);
-    
+
     // Step 3: Double pilot to get 38kHz subcarrier (squaring creates 2nd harmonic)
     let mut subcarrier_38k: Vec<f32> = pilot.iter().map(|&p| p * p).collect();
-    
+
     // Remove DC component from squaring
     let dc = subcarrier_38k.iter().sum::<f32>() / subcarrier_38k.len() as f32;
     for s in &mut subcarrier_38k {
         *s -= dc;
     }
-    
+
     // Bandpass around 38kHz to clean up the doubled carrier
     let _subcarrier_38k = bandpass_filter(&subcarrier_38k, sample_rate, 37_900.0, 38_100.0);
-    
+
     // Step 4: Extract L-R signal (23-53kHz)
     let l_minus_r = bandpass_filter(&multiplex, sample_rate, 23_000.0, 53_000.0);
-    
+
     // Step 5: Synchronously demodulate L-R
     // L-R is DSBSC at 38kHz. Multiply by 38kHz carrier to demodulate
     let omega_38k = 2.0 * PI * 38_000.0 / sample_rate;
@@ -181,17 +190,25 @@ fn demod_fm_stereo(samples: &[IQSample], sample_rate: f32) -> Vec<(f32, f32)> {
         let carrier = (omega_38k * n as f32).cos();
         l_minus_r_demod.push(s * carrier * 2.0);
     }
-    
+
     // Lowpass the demodulated L-R to remove high-frequency components
     let l_minus_r_demod = lowpass_filter(&l_minus_r_demod, sample_rate, 15_000.0);
-    
+
     // Step 6: Extract mono (L+R) - lowpass the multiplex at 15kHz
     let l_plus_r = lowpass_filter(&multiplex, sample_rate, 15_000.0);
-    
+
     // Step 7: Matrix to get L and R
-    let mut stereo = Vec::with_capacity(multiplex.len().min(l_plus_r.len()).min(l_minus_r_demod.len()));
-    let len = multiplex.len().min(l_plus_r.len()).min(l_minus_r_demod.len());
-    
+    let mut stereo = Vec::with_capacity(
+        multiplex
+            .len()
+            .min(l_plus_r.len())
+            .min(l_minus_r_demod.len()),
+    );
+    let len = multiplex
+        .len()
+        .min(l_plus_r.len())
+        .min(l_minus_r_demod.len());
+
     for i in 0..len {
         let m = l_plus_r[i];
         let s = l_minus_r_demod[i];
@@ -199,7 +216,7 @@ fn demod_fm_stereo(samples: &[IQSample], sample_rate: f32) -> Vec<(f32, f32)> {
         let right = (m - s) * 0.5;
         stereo.push((left, right));
     }
-    
+
     stereo
 }
 
@@ -208,18 +225,23 @@ fn demod_fm_stereo(samples: &[IQSample], sample_rate: f32) -> Vec<(f32, f32)> {
 // ============================================================================
 
 /// Single Side Band Demodulation using Hilbert Transform
-/// 
+///
 /// Uses a FIR Hilbert transform approximation to create a 90-degree phase shift,
 /// then combines I and shifted-Q to extract either USB or LSB.
-/// 
+///
 /// For USB: output = I * cos(ωt) - H(Q) * sin(ωt)  [or equivalent]
 /// For LSB: output = I * cos(ωt) + H(Q) * sin(ωt)
-/// 
+///
 /// This implementation uses a simple frequency translation + Hilbert transform approach:
 /// 1. Translate signal to baseband by mixing with complex carrier
 /// 2. Apply Hilbert transform to Q to get analytic signal
 /// 3. Take real part for USB, or negative real part for LSB
-fn demod_ssb_hilbert(samples: &[IQSample], sample_rate: f32, carrier_offset: f32, lsb: bool) -> Vec<f32> {
+fn demod_ssb_hilbert(
+    samples: &[IQSample],
+    sample_rate: f32,
+    carrier_offset: f32,
+    lsb: bool,
+) -> Vec<f32> {
     if samples.is_empty() {
         return vec![];
     }
@@ -228,33 +250,33 @@ fn demod_ssb_hilbert(samples: &[IQSample], sample_rate: f32, carrier_offset: f32
     let omega = 2.0 * PI * carrier_offset / sample_rate;
     let mut baseband_i = Vec::with_capacity(samples.len());
     let mut baseband_q = Vec::with_capacity(samples.len());
-    
+
     for (n, s) in samples.iter().enumerate() {
         let t = n as f32;
         let cos_osc = (omega * t).cos();
         let sin_osc = (omega * t).sin();
-        
+
         // Complex multiplication: s * e^(-j*omega*t)
         baseband_i.push(s.i * cos_osc + s.q * sin_osc);
         baseband_q.push(-s.i * sin_osc + s.q * cos_osc);
     }
-    
+
     // Step 2: Apply Hilbert transform to Q channel
     let hilbert_q = fir_hilbert_transform(&baseband_q);
-    
+
     // Step 3: For USB: I + j*H(Q) -> take real part is just I
     //          For LSB: I - j*H(Q) -> take real part is just I
-    // 
+    //
     // Actually, the standard approach:
     // - Translate to baseband
     // - USB = (I + j*H(Q)) -> lowpass -> take real part (which is I after proper filtering)
     // - LSB = (I - j*H(Q)) -> lowpass -> take real part
-    // 
-    // Simpler: after translation, lowpass filter I for USB, or 
+    //
+    // Simpler: after translation, lowpass filter I for USB, or
     // use the Hilbert-transformed Q to suppress the unwanted sideband
-    
+
     let mut output = Vec::with_capacity(samples.len());
-    
+
     if lsb {
         // LSB: I * cos(0) + H(Q) * sin(0) with proper phase
         // Actually for LSB after downconversion: take I + H(Q) as analytic, then take real
@@ -268,42 +290,42 @@ fn demod_ssb_hilbert(samples: &[IQSample], sample_rate: f32, carrier_offset: f32
             output.push(baseband_i[i] - hilbert_q[i]);
         }
     }
-    
+
     // Apply lowpass filter to remove residual high-frequency components
     lowpass_filter(&output, sample_rate, 3000.0)
 }
 
 /// FIR Hilbert Transform approximation
-/// 
+///
 /// Uses a truncated ideal Hilbert transform impulse response:
 /// h[n] = (2/πn) * sin²(πn/2) for n ≠ 0
 /// h[n] = 0 for n = 0
-/// 
+///
 /// Applied with a Hamming window for better frequency response.
 fn fir_hilbert_transform(signal: &[f32]) -> Vec<f32> {
     const TAPS: usize = 63; // Odd number, must be odd for symmetric FIR
     let half_taps = TAPS / 2;
-    
+
     // Generate Hilbert transform filter coefficients with Hamming window
     let mut coeffs = vec![0.0f32; TAPS];
-    for n in 0..TAPS {
+    for (n, coeff) in coeffs.iter_mut().enumerate() {
         let k = n as i32 - half_taps as i32;
         if k == 0 {
-            coeffs[n] = 0.0;
+            *coeff = 0.0;
         } else {
             let kf = k as f32;
             // Ideal Hilbert transform: h[n] = 2/(π*n) for odd n, 0 for even n
             if k % 2 == 0 {
-                coeffs[n] = 0.0;
+                *coeff = 0.0;
             } else {
                 let ideal = 2.0 / (PI * kf);
                 // Hamming window
                 let window = 0.54 - 0.46 * (2.0 * PI * n as f32 / (TAPS - 1) as f32).cos();
-                coeffs[n] = ideal * window;
+                *coeff = ideal * window;
             }
         }
     }
-    
+
     // Convolve signal with filter
     let mut output = vec![0.0f32; signal.len()];
     for i in half_taps..signal.len() - half_taps {
@@ -313,15 +335,11 @@ fn fir_hilbert_transform(signal: &[f32]) -> Vec<f32> {
         }
         output[i] = sum;
     }
-    
+
     // Fill edges with original signal (approximate)
-    for i in 0..half_taps {
-        output[i] = signal[i];
-    }
-    for i in signal.len() - half_taps..signal.len() {
-        output[i] = signal[i];
-    }
-    
+    output[..half_taps].copy_from_slice(&signal[..half_taps]);
+    output[signal.len() - half_taps..].copy_from_slice(&signal[signal.len() - half_taps..]);
+
     output
 }
 
@@ -334,32 +352,32 @@ fn lowpass_filter(signal: &[f32], sample_rate: f32, cutoff_hz: f32) -> Vec<f32> 
     if signal.is_empty() {
         return vec![];
     }
-    
+
     let rc = 1.0 / (2.0 * PI * cutoff_hz);
     let dt = 1.0 / sample_rate;
     let alpha = dt / (rc + dt);
-    
+
     let mut filtered = Vec::with_capacity(signal.len());
     let mut prev = signal[0];
     filtered.push(prev);
-    
+
     for &sample in &signal[1..] {
         prev = prev + alpha * (sample - prev);
         filtered.push(prev);
     }
-    
+
     filtered
 }
 
 /// Bandpass filter using cascaded lowpass + highpass (simple IIR approximation)
-/// 
+///
 /// For better performance, this uses a simple 2nd-order IIR bandpass.
 /// Center frequency and bandwidth determine the Q factor.
 fn bandpass_filter(signal: &[f32], sample_rate: f32, low_hz: f32, high_hz: f32) -> Vec<f32> {
     if signal.is_empty() {
         return vec![];
     }
-    
+
     // Simple approach: highpass then lowpass
     let highpassed = highpass_filter(signal, sample_rate, low_hz);
     lowpass_filter(&highpassed, sample_rate, high_hz)
@@ -370,23 +388,23 @@ fn highpass_filter(signal: &[f32], sample_rate: f32, cutoff_hz: f32) -> Vec<f32>
     if signal.is_empty() {
         return vec![];
     }
-    
+
     let rc = 1.0 / (2.0 * PI * cutoff_hz);
     let dt = 1.0 / sample_rate;
     let alpha = rc / (rc + dt);
-    
+
     let mut filtered = Vec::with_capacity(signal.len());
     let mut prev_input = signal[0];
     let mut prev_output = 0.0f32;
     filtered.push(prev_output);
-    
+
     for &sample in &signal[1..] {
         let output = alpha * (prev_output + sample - prev_input);
         filtered.push(output);
         prev_input = sample;
         prev_output = output;
     }
-    
+
     filtered
 }
 
@@ -406,17 +424,20 @@ pub fn normalize_audio(samples: &mut [f32]) {
 
 /// Convert f32 audio samples to i16 for WAV/PCM output
 pub fn to_i16(samples: &[f32]) -> Vec<i16> {
-    samples.iter().map(|&s| {
-        let clamped = s.clamp(-1.0, 1.0);
-        (clamped * i16::MAX as f32) as i16
-    }).collect()
+    samples
+        .iter()
+        .map(|&s| {
+            let clamped = s.clamp(-1.0, 1.0);
+            (clamped * i16::MAX as f32) as i16
+        })
+        .collect()
 }
 
 /// Save audio samples as raw PCM (f32 little-endian)
 pub fn save_pcm(samples: &[f32], path: &str) -> anyhow::Result<()> {
     use std::fs::File;
     use std::io::Write;
-    
+
     let mut file = File::create(path)?;
     for &sample in samples {
         file.write_all(&sample.to_le_bytes())?;
@@ -428,7 +449,7 @@ pub fn save_pcm(samples: &[f32], path: &str) -> anyhow::Result<()> {
 pub fn save_pcm_stereo(samples: &[(f32, f32)], path: &str) -> anyhow::Result<()> {
     use std::fs::File;
     use std::io::Write;
-    
+
     let mut file = File::create(path)?;
     for &(l, r) in samples {
         file.write_all(&l.to_le_bytes())?;
@@ -488,12 +509,13 @@ impl Demodulator {
                     input.push(prev.clone());
                 }
                 input.extend(samples.iter().cloned());
-                
+
                 if input.len() < 2 {
                     vec![0.0; samples.len()]
                 } else {
                     demod_fm(&input, self.sample_rate)
-                        .into_iter().skip(if self.prev_sample.is_some() { 1 } else { 0 })
+                        .into_iter()
+                        .skip(if self.prev_sample.is_some() { 1 } else { 0 })
                         .collect()
                 }
             }
@@ -501,16 +523,22 @@ impl Demodulator {
                 // For stereo, accumulate samples and process in blocks
                 self.stereo_buffer.extend(samples.iter().cloned());
                 if self.stereo_buffer.len() >= self.stereo_buffer_size {
-                    let block: Vec<IQSample> = self.stereo_buffer.drain(..self.stereo_buffer_size).collect();
+                    let block: Vec<IQSample> = self
+                        .stereo_buffer
+                        .drain(..self.stereo_buffer_size)
+                        .collect();
                     let stereo = demod_fm_stereo(&block, self.sample_rate);
                     stereo.into_iter().map(|(l, r)| (l + r) * 0.5).collect()
                 } else {
                     vec![0.0; samples.len()]
                 }
             }
-            DemodMode::SSB | DemodMode::SSB_LSB => {
-                demod_ssb_hilbert(samples, self.sample_rate, self.carrier_offset, self.mode == DemodMode::SSB_LSB)
-            }
+            DemodMode::SSB | DemodMode::SSB_LSB => demod_ssb_hilbert(
+                samples,
+                self.sample_rate,
+                self.carrier_offset,
+                self.mode == DemodMode::SSB_LSB,
+            ),
         };
 
         // Save last sample for next chunk
@@ -534,9 +562,12 @@ impl Demodulator {
         }
 
         self.stereo_buffer.extend(samples.iter().cloned());
-        
+
         if self.stereo_buffer.len() >= self.stereo_buffer_size {
-            let block: Vec<IQSample> = self.stereo_buffer.drain(..self.stereo_buffer_size).collect();
+            let block: Vec<IQSample> = self
+                .stereo_buffer
+                .drain(..self.stereo_buffer_size)
+                .collect();
             demod_fm_stereo(&block, self.sample_rate)
         } else {
             vec![(0.0, 0.0); samples.len()]
@@ -570,33 +601,43 @@ impl Demodulator {
 // ============================================================================
 
 /// Trait for demodulator plugins
-/// 
+///
 /// Plugins can implement custom demodulation algorithms and be registered
 /// in the demod plugin registry or loaded dynamically.
 pub trait DemodPlugin: Send + Sync {
     /// Plugin name
     fn name(&self) -> &str;
-    
+
     /// Plugin description
     fn description(&self) -> &str;
-    
+
     /// Demodulate a block of IQ samples to audio
-    fn demodulate(&mut self, samples: &[IQSample], sample_rate: f32, carrier_offset: f32) -> Vec<f32>;
-    
+    fn demodulate(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        carrier_offset: f32,
+    ) -> Vec<f32>;
+
     /// Check if this plugin supports stereo output
     fn supports_stereo(&self) -> bool {
         false
     }
-    
+
     /// Demodulate to stereo (optional, default returns mono duplicated)
-    fn demodulate_stereo(&mut self, samples: &[IQSample], sample_rate: f32, carrier_offset: f32) -> Vec<(f32, f32)> {
+    fn demodulate_stereo(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        carrier_offset: f32,
+    ) -> Vec<(f32, f32)> {
         let mono = self.demodulate(samples, sample_rate, carrier_offset);
         mono.into_iter().map(|m| (m, m)).collect()
     }
-    
+
     /// Set a parameter by name
     fn set_param(&mut self, _key: &str, _value: f64) {}
-    
+
     /// Get a parameter by name
     fn get_param(&self, _key: &str) -> Option<f64> {
         None
@@ -610,12 +651,17 @@ impl DemodPlugin for AmDemodPlugin {
     fn name(&self) -> &str {
         "am"
     }
-    
+
     fn description(&self) -> &str {
         "AM envelope detection demodulator"
     }
-    
-    fn demodulate(&mut self, samples: &[IQSample], _sample_rate: f32, _carrier_offset: f32) -> Vec<f32> {
+
+    fn demodulate(
+        &mut self,
+        samples: &[IQSample],
+        _sample_rate: f32,
+        _carrier_offset: f32,
+    ) -> Vec<f32> {
         demod_am(samples)
     }
 }
@@ -627,12 +673,17 @@ impl DemodPlugin for FmDemodPlugin {
     fn name(&self) -> &str {
         "fm"
     }
-    
+
     fn description(&self) -> &str {
         "FM frequency discriminator demodulator"
     }
-    
-    fn demodulate(&mut self, samples: &[IQSample], sample_rate: f32, _carrier_offset: f32) -> Vec<f32> {
+
+    fn demodulate(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        _carrier_offset: f32,
+    ) -> Vec<f32> {
         demod_fm(samples, sample_rate)
     }
 }
@@ -644,21 +695,31 @@ impl DemodPlugin for FmStereoDemodPlugin {
     fn name(&self) -> &str {
         "fm-stereo"
     }
-    
+
     fn description(&self) -> &str {
         "FM stereo broadcast demodulator with pilot recovery"
     }
-    
-    fn demodulate(&mut self, samples: &[IQSample], sample_rate: f32, _carrier_offset: f32) -> Vec<f32> {
+
+    fn demodulate(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        _carrier_offset: f32,
+    ) -> Vec<f32> {
         let stereo = demod_fm_stereo(samples, sample_rate);
         stereo.into_iter().map(|(l, r)| (l + r) * 0.5).collect()
     }
-    
+
     fn supports_stereo(&self) -> bool {
         true
     }
-    
-    fn demodulate_stereo(&mut self, samples: &[IQSample], sample_rate: f32, _carrier_offset: f32) -> Vec<(f32, f32)> {
+
+    fn demodulate_stereo(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        _carrier_offset: f32,
+    ) -> Vec<(f32, f32)> {
         demod_fm_stereo(samples, sample_rate)
     }
 }
@@ -676,9 +737,13 @@ impl SsbDemodPlugin {
 
 impl DemodPlugin for SsbDemodPlugin {
     fn name(&self) -> &str {
-        if self.lsb { "ssb-lsb" } else { "ssb" }
+        if self.lsb {
+            "ssb-lsb"
+        } else {
+            "ssb"
+        }
     }
-    
+
     fn description(&self) -> &str {
         if self.lsb {
             "SSB lower sideband demodulator using Hilbert transform"
@@ -686,8 +751,13 @@ impl DemodPlugin for SsbDemodPlugin {
             "SSB upper sideband demodulator using Hilbert transform"
         }
     }
-    
-    fn demodulate(&mut self, samples: &[IQSample], sample_rate: f32, carrier_offset: f32) -> Vec<f32> {
+
+    fn demodulate(
+        &mut self,
+        samples: &[IQSample],
+        sample_rate: f32,
+        carrier_offset: f32,
+    ) -> Vec<f32> {
         demod_ssb_hilbert(samples, sample_rate, carrier_offset, self.lsb)
     }
 }
@@ -703,7 +773,7 @@ impl DemodPluginRegistry {
             plugins: Vec::new(),
         }
     }
-    
+
     /// Register all built-in demodulators
     pub fn with_builtins(mut self) -> Self {
         self.register(Box::new(AmDemodPlugin));
@@ -713,27 +783,33 @@ impl DemodPluginRegistry {
         self.register(Box::new(SsbDemodPlugin::new(true)));
         self
     }
-    
+
     /// Register a plugin
     pub fn register(&mut self, plugin: Box<dyn DemodPlugin>) {
         self.plugins.push(plugin);
     }
-    
+
     /// Find a plugin by name
     pub fn find(&self, name: &str) -> Option<&dyn DemodPlugin> {
-        self.plugins.iter().find(|p| p.name() == name).map(|p| p.as_ref())
+        self.plugins
+            .iter()
+            .find(|p| p.name() == name)
+            .map(|p| p.as_ref())
     }
-    
+
     /// List all registered plugins
     pub fn list(&self) -> Vec<(&str, &str)> {
-        self.plugins.iter().map(|p| (p.name(), p.description())).collect()
+        self.plugins
+            .iter()
+            .map(|p| (p.name(), p.description()))
+            .collect()
     }
-    
+
     /// Number of registered plugins
     pub fn len(&self) -> usize {
         self.plugins.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
     }

@@ -1,6 +1,6 @@
 [package]
 name = "signalscope"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["synthalorian"]
 description = "SDR spectrum analyzer with retro oscilloscope UI"
@@ -20,16 +20,11 @@ libloading = "0.8"
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 
-# SDR support (optional features for different backends)
-# rtlsdr = { version = "0.2", optional = true }
-# hackrf = { version = "0.2", optional = true }
-
-# wgpu for retro oscilloscope renderer
-# wgpu = "0.19"
-# winit = "0.29"
-# pollster = "0.3"
+# SDR support (optional feature; requires system librtlsdr)
+# rtlsdr = { version = "0.1.4", optional = true } is declared above.
 
 [features]
 default = []
+# NOTE: There is intentionally no `hackrf` feature. HackRF support is not
+# implemented; see the roadmap in README.md.
 rtlsdr = ["dep:rtlsdr"]
-hackrf = []
