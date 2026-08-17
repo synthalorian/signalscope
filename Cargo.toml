@@ -2,7 +2,7 @@
 name = "signalscope"
 version = "1.0.0"
 edition = "2021"
-authors = ["synthalorian"]
+authors = ["synth"]
 description = "SDR spectrum analyzer with retro oscilloscope UI"
 license = "MIT"
 repository = "https://github.com/synthalorian/signalscope"
