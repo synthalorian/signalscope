@@ -16,7 +16,7 @@ rtlsdr = { version = "0.1.4", optional = true }
 rustfft = "6.4.1"
 num-complex = "0.4.6"
 ctrlc = "3.5.2"
-libloading = "0.8"
+libloading = "0.9"
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 
